@@ -127,3 +127,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Raw binary files from sensor
+*.bin
+*.log
+data.json
