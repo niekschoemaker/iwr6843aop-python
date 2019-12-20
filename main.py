@@ -19,9 +19,9 @@ parser.add_argument("-t", "--targets", help="output targets data as json to file
 parser.add_argument("-c", "--controlport", help="Change the control com port to use (default: COM11)", metavar="COMPORT", dest="controlPort")
 parser.add_argument("-d", "--dataport", help="Change the data com port to use (default: COM12)", metavar="COMPORT", dest="dataPort")
 args = parser.parse_args()
-jsonFile = None
-binFile = None
-targetsFile = None
+jsonFile: TextIOWrapper = None
+binFile: TextIOWrapper = None
+targetsFile: TextIOWrapper = None
 
 # Serial ports, can be overriden by specifying --dataport PORT and --controlport PORT
 dataPort = 'COM12'
@@ -95,26 +95,12 @@ class Float:
     def fromBytes(self, data: bytes, offset: int = 0):
         return struct.unpack_from('<f', data, offset)[0]
 
-class FrameHeader:
-    sync: ULong
-    version: UInt
-    platform: UInt
-    timestamp: UInt
-    packetLength: UInt
-    frameNumber: UInt
-    subFrameNumber: UInt
-    chirpMargin: UInt
-    frameMargin: UInt
-    uartSentTime: UInt
-    trackProcessTime: UInt
-    numTLVs: UShort
-    checksum: UShort
-    def __init__(self, data: bytes):
-        pass
 #endregion
 
 #region dataTypes
 
+# Initiate the data types, used to convert from CTypes to Python Types
+# To convert simply iterate over the values and increase the offset by the length property
 frameHeaderStructType: dict = { #52 bytes long
     #'sync':             ULong(), # See syncPatternUINT64 below
     'version':          UInt(),
@@ -175,7 +161,7 @@ cTypesInfo: dict = {
     'uint8': "<B"
 }
 
-string = [
+config = [
     "sensorStop\n",
     "flushCfg\n",
     "dfeDataOutputMode 1\n",
@@ -216,8 +202,8 @@ serialControl.open()
 serialData.open()
 
 # Send config to radar device
-for config in string:
-    serialControl.write(config.encode())
+for configValue in config:
+    serialControl.write(configValue.encode())
     echo = serialControl.readline()
     done = serialControl.readline()
     prompt = serialControl.read(11)
