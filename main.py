@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, TextIO, BinaryIO
 import serial
 import struct
 import binascii
@@ -16,12 +16,14 @@ parser.add_argument("-v", "--verbose", help="enable verbose mode", action="store
 parser.add_argument("-f", "--file", help="output all data as json to file", metavar="PATH", dest='jsonFile')
 parser.add_argument("-r", "--rawdata", help="output raw binary to specified file", metavar="PATH", dest='binFile')
 parser.add_argument("-t", "--targets", help="output targets data as json to file", metavar="PATH", dest='targetsFile')
-parser.add_argument("-c", "--controlport", help="Change the control com port to use (default: COM11)", metavar="COMPORT", dest="controlPort")
+parser.add_argument("-p", "--controlport", help="Change the control com port to use (default: COM11)", metavar="COMPORT", dest="controlPort")
 parser.add_argument("-d", "--dataport", help="Change the data com port to use (default: COM12)", metavar="COMPORT", dest="dataPort")
+parser.add_argument("-c", "--chirpconfig", help="Specify chirpconfig file (default: mmw_pplcount_demo_default.cfg)", metavar="PATH", dest="configFile")
 args = parser.parse_args()
-jsonFile: TextIOWrapper = None
-binFile: TextIOWrapper = None
-targetsFile: TextIOWrapper = None
+jsonFile: TextIO = None
+binFile: BinaryIO = None
+targetsFile: TextIO = None
+configFilePath: str = "mmw_pplcount_demo_default.cfg"
 
 # Serial ports, can be overriden by specifying --dataport PORT and --controlport PORT
 dataPort = 'COM12'
@@ -46,6 +48,9 @@ try:
     if args.controlPort:
         controlPort = args.controlPort
         print("Control port set to {:s}".format(controlPort))
+    if args.configFile:
+        configFilePath = args.configFile
+        print("Config file set to {:s}".format(configFilePath))
 except:
     e = sys.exc_info()[0]
     print( "Error while parsing arguments: %s" % e )
@@ -161,33 +166,6 @@ cTypesInfo: dict = {
     'uint8': "<B"
 }
 
-config = [
-    "sensorStop\n",
-    "flushCfg\n",
-    "dfeDataOutputMode 1\n",
-    "channelCfg 15 7 0\n",
-    "adcCfg 2 1\n",
-    "adcbufCfg -1 0 0 1 1\n",
-    "profileCfg 0 60.6 82 7 40 0 0 82 1 128 5300 0 0 48\n",
-    "chirpCfg 0 0 0 0 0 0 0 1\n",
-    "chirpCfg 1 1 0 0 0 0 0 2\n",
-    "chirpCfg 2 2 0 0 0 0 0 4\n",
-    "frameCfg 0 2 64 0 50 1 0\n",
-    "lowPower 0 0\n",
-    "cfarCfg -1 0 0 8 4 4 0 7120\n",
-    "cfarCfg -1 1 0 4 2 3 0 7120\n",
-    "SceneryParam -4.0 4 0.1 8 -4 4\n",
-    "GatingParam 3 2 2 2 12\n",
-    "AllocationParam 100 120 0.1 20 2 20\n",
-    "StateParam 10 5 10 100 5\n",
-    "VariationParam 0.2887 0.2887 1 1\n",
-    "MaxAcceleration 0.1 0.1 0.1\n",
-    "AllocZone 0 1\n",
-    "CloudPersistence 0\n",
-    "trackingCfg 1 2 250 10 200 100 90\n",
-    "sensorStart\n"
-]
-
 #endregion
 
 
@@ -202,23 +180,23 @@ serialControl.open()
 serialData.open()
 
 # Send config to radar device
-for configValue in config:
-    serialControl.write(configValue.encode())
-    echo = serialControl.readline()
-    done = serialControl.readline()
-    prompt = serialControl.read(11)
-    # Print without line ending because the echo a line ending
-    print(echo.decode('utf-8'), end='')
-    if verbose:
-        print(done.decode('utf-8'))
-        print(prompt.decode('utf-8'))
+with open(configFilePath, "r") as configFile:
+    for configLine in configFile.readlines():
+        # Send config value to the control port
+        serialControl.write(configLine.encode())
+        # Wait for response from control port
+        echo = serialControl.readline()
+        done = serialControl.readline()
+        prompt = serialControl.read(11)
+        print(echo.decode('utf-8'), end='')
+        if verbose:
+            print(done.decode('utf-8'))
+            print(prompt.decode('utf-8'))
 
 # syncPattern, gets send at the start of each and every frame, is used to keep sync between this program and the radar device
 syncPattern = b'\x02\x01\x04\x03\x06\x05\x08\x07'
 # Simply counter to keep track of number of frames captured
 dataCount = 0
-
-serialData.read(8)
 
 try:
     # Initialize the fancy console screen
