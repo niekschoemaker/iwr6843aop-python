@@ -1,3 +1,6 @@
+# Python implementation for IWR6843
+# Data structure and reading of data loosely based on the matlab code from IWR6843 overhead people counting lab from Texas-Instruments
+
 from typing import Tuple, TextIO, BinaryIO
 import serial
 import struct
