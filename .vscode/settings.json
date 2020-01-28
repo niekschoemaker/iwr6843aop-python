@@ -1,0 +1,8 @@
+{
+    "appService.zipIgnorePattern": [
+        "node_modules{,/**}",
+        ".vscode{,/**}"
+    ],
+    "appService.defaultWebAppToDeploy": "/subscriptions/d4bad308-b046-4024-80c4-4bb2ee02687f/resourceGroups/appsvc_linux_centralus/providers/Microsoft.Web/sites/iot-iwr6843-web-app",
+    "appService.deploySubpath": ""
+}

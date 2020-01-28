@@ -8,6 +8,12 @@ import time
 import sys
 import json
 import curses
+import math
+import _thread
+from azure.iot.device import IoTHubDeviceClient, Message
+
+CONNECTION_STRING = "HostName=radar-iot-hub.azure-devices.net;DeviceId=iwr6843-1;SharedAccessKey=JHZprpQEVO5NnUX1ImRanBLfOKheMooVWXjqJEyrjwI="
+MSG_TXT = '{{"peopleEntered": {peopleEntered},"peopleLeft": {peopleLeft}}}'
 
 # initiate the parser
 verbose = False
@@ -193,10 +199,118 @@ with open(configFilePath, "r") as configFile:
             print(done.decode('utf-8'))
             print(prompt.decode('utf-8'))
 
+
 # syncPattern, gets send at the start of each and every frame, is used to keep sync between this program and the radar device
 syncPattern = b'\x02\x01\x04\x03\x06\x05\x08\x07'
+
 # Simply counter to keep track of number of frames captured
 dataCount = 0
+targetData: dict = dict()
+peopleCount = 0
+peopleEntered = 0
+peopleLeft = 0
+
+def newTarget(target: tuple):
+    nTarget, dist, lastTime, startingPosition = False, None, time.time(), None
+    oldTarget = targetData.get(target['tid'], None)
+    inRoom = None
+    
+    # If we have older data we want to check the older position and check if this target is still in the room or not
+    if oldTarget != None and lastTime - oldTarget['lastTime'] < 5.0:
+        inRoom = oldTarget['inRoom']
+        x, z = oldTarget['target']['posX'], oldTarget['target']['posZ']
+        newX, newZ = target['posX'], target['posZ']
+        dist = math.sqrt(math.pow((x - z), 2) + math.pow((newX - newZ), 2))
+        startingTime = oldTarget['startingTime']
+        startingPosition = oldTarget['startingPos']
+        nTarget = False
+        global peopleCount, peopleEntered, peopleLeft
+        # Assuming the sensor is placed correctly z == 0 should be the wall so if it is more than 0 person is in the room, otherwise he is outside the room
+        # 0.5 and -0.5 is used to filter false positives and negatives, also works somewhat to filter out things like doors moving in fron of the sensor and just random targets
+        if target['posZ'] > 0.5 and not oldTarget['inRoom']:
+            if target['posY'] > 0.30:
+                peopleCount += 1
+                peopleEntered += 1
+            inRoom = True
+        elif target['posZ'] < -0.5 and oldTarget['inRoom']:
+            if target['posY'] > 0.3:
+                peopleCount -= 1
+                peopleLeft += 1
+            inRoom = False
+    else:
+        nTarget = True
+        dist = -1.0
+        startingTime = lastTime
+        startingPosition = { 'x': target['posX'], 'y': target['posY'] }
+        if target['posZ'] > 0.5:
+            inRoom = True
+        elif target['posZ'] < -0.5:
+            inRoom = False
+
+    
+    targetData[target['tid']] = {
+        'target': target,
+        'firstData': nTarget,
+        'distance': dist,
+        'lastTime': lastTime,
+        'startingTime': startingTime,
+        'startingPos': startingPosition,
+        'inRoom': inRoom
+    }
+
+def iothub_client_init():
+    # Create an IoT Hub client
+    client = IoTHubDeviceClient.create_from_connection_string(CONNECTION_STRING)
+    return client
+
+def WatcherThread():
+    client = iothub_client_init()
+    global peopleEntered, peopleLeft
+    while True:
+        time.sleep(10)
+        msg_txt_formatted = MSG_TXT.format(peopleLeft=peopleLeft, peopleEntered=peopleEntered)
+        message = Message(msg_txt_formatted)
+
+        client.send_message(message)
+        print ( "Message successfully sent" )
+        peopleLeft = 0
+        peopleEntered = 0
+
+
+# This function keeps a buffer of 8 bytes and compares it with the sync pattern
+# When sync pattern is found the function returns to the caller's context
+def WaitForSyncPattern():
+    # Initialize with the syncPattern
+    # since data gets popped before the first compare this never causes it to be true but does ensure the length is the same
+    dataBuffer = bytearray(syncPattern)
+
+    # Wait for the serial port to receive the sync pattern
+    while True:
+        # Listen for ctrl+c in case it gets stuck
+        inputCh = stdscr.getch()
+        # inputCh 3: Ctrl+c
+        if inputCh == 3:
+            sys.exit(0)
+
+        # Read 1 byte of data
+        currentData = serialData.read(1)
+        # Remove the oldest byte received from the serial port
+        dataBuffer.pop(0)
+        dataBuffer += currentData
+        # If binfile is set (dump file parameter on command line) write raw data to file
+        if binFile:
+            binFile.write(currentData)
+        
+        # Break the loop if the data is the same as the syncPattern
+        if bytes(dataBuffer) == syncPattern:
+            return
+
+# Create watcher thread, can be used to send data to ie. a backend
+try:
+   _thread.start_new_thread( WatcherThread, () )
+except Exception as e:
+    print(e)
+    print("Error: unable to start thread")
 
 try:
     # Initialize the fancy console screen
@@ -221,29 +335,13 @@ try:
         if inputCh == 3:
             sys.exit(0)
 
-        # Wait for the serial port to receive the sync pattern
-        dataBuffer = bytearray(syncPattern)
-        while True:
-            # Listen for ctrl+c in case it gets stuck
-            inputCh = stdscr.getch()
-            if inputCh == 3:
-                sys.exit(0)
-
-            currentData = serialData.read(1)
-            # Remove last e
-            dataBuffer.pop(0)
-            dataBuffer += currentData
-            if binFile:
-                binFile.write(currentData)
-            # Break the loop if the data is the same as the syncPattern
-            if bytes(dataBuffer) == syncPattern:
-                break
+        WaitForSyncPattern()
 
         # Initialize the data dictionary
         dataDict = {
             'tlvHeaders': list()
         }
-        # offset to keep track of which bytes to read next
+        # offset in bytes in the current packet, to ensure the correct bytes are read
         offset: int = 0
 
         # Decode the header, iterate over every type as defined in frameHeaderStructType and decode it to the corresponding data type
@@ -259,7 +357,7 @@ try:
         # Read the remaining data
         data = serialData.read(dataLength)
 
-        targetsData = list()
+        currentTargetData = list()
 
         for nTlv in range(0, dataDict['numTLVs']):
             tlvData = {}
@@ -289,46 +387,60 @@ try:
                 for i in range(0, numTargets):
                     target = {}
                     # Decode Target data
-                    for targetData in targetStruct.items():
-                        target[targetData[0]] = targetData[1].fromBytes(data, offset)
-                        offset += targetData[1].length
+                    for t in targetStruct.items():
+                        target[t[0]] = t[1].fromBytes(data, offset)
+                        offset += t[1].length
 
                     targets.append(target)
+                    currentTargetData.append(target)
                 tlvData['targets'] = targets
-                targetsData.append(targets)
 
             # type 8 contains some additional data regarding targets, seems to be something to do with stance etc, but shouldn't be necessary
             if tlvData['type'] == 8: # type 8: additional target data
                 offset += valueLength
 
             dataDict['tlvHeaders'].append(tlvData)
+
         if numTargets > 0:
-            # We got a target
-            if not verbose:
-                mainWindow.addstr(0, 0, 'TargetID\tposition\t\tvelocity\t\tacceleration', curses.A_BOLD)
-                # If not verbose, so console is available to be used, print the data in a nice format to the console.
-                # The data is in a fixed position based on the target id, this makes it easier to track individual targets by a mere human
-                for targets in targetsData:
-                    for t in targets:
-                        mainWindow.addstr(t['tid'] + 1, 0, "{:d}\t\t{{{: .2f}, {: .2f}, {: .2f}}}\t{{{: .2f}, {: .2f}, {: .2f}}}\t{{{: .2f}, {: .2f}, {: .2f}}}".format(
-                            t['tid'],
-                            t['posX'], t['posY'], t['posZ'],
-                            t['velX'], t['velY'], t['velZ'],
-                            t['accX'], t['accY'], t['accZ']
-                            ))
-                    mainWindow.refresh()
+            # This packet contains at least one target
+            for t in currentTargetData:
+                newTarget(t)
+            
             # Write target data to file as json if specified with --targets PATH
             if targetsFile:
-                json.dump(targetsData, targetsFile)
-            
+                json.dump(currentTargetData, targetsFile)
+        
+        # Add the parsed data to the console window in a nice formot
+        mainWindow.clear()
+        mainWindow.addstr(0, 0, 'TargetID\tposition\t\tvelocity\t\tacceleration\t\tdTime\tdistance', curses.A_BOLD)
+        currentTime: float = time.time()
+        row = 0
+        for target in targetData.values():
+            if time.time() - target['lastTime'] > 5.0:
+                continue
+
+            t = target['target']
+            startPos = target['startingPos']
+            row = row + 1
+            mainWindow.addstr(row, 0, "{:d}\t\t{{{: .2f}, {: .2f}, {: .2f}}}\t{{{: .2f}, {: .2f}, {: .2f}}}\t{{{: .2f}, {: .2f}, {: .2f}}}\t{: .2f}\t{: .2f}\t{{{: .2f}, {: .2f}}}\t{}".format(
+                t['tid'],
+                t['posX'], t['posY'], t['posZ'],
+                t['velX'], t['velY'], t['velZ'],
+                t['accX'], t['accY'], t['accZ'],
+                currentTime - target['lastTime'], target['distance'],
+                startPos['x'], startPos['y'], str(target['inRoom']) + ' '
+                ))
+
+        mainWindow.refresh()
+
 
         if verbose:
             # Print all the collected data to the console, this spams a lot so locked behind -v argument
             mainWindow.addstr(str(dataDict) + '\n')
             mainWindow.refresh()
-        
+
         dataCount += 1
-        
+
         # Write the raw binary data to file if --rawdata PATH is specified
         if binFile:
             binFile.write(data)
@@ -336,6 +448,8 @@ try:
         # Write the raw data as json to file if --file PATH is specified
         if jsonFile:
             json.dump(dataDict, jsonFile, indent=4)
+        
+
         
 
         # Check if screen was re-sized (True or False)
@@ -358,9 +472,10 @@ try:
         # Clear the window, this is the easiest way to make sure no old data gets left on the screen
         subWindow.clear()
         subWindow.addstr(0, 0, 'Captured frames: {:d}; Captured frames: {:d}'.format(dataCount, dataDict['frameNumber']))
-        subWindow.addstr(1, 0, 'People Count: {:d}'.format(numTargets))
+        subWindow.addstr(1, 0, 'People Count: {:d}'.format(peopleCount))
         subWindow.addstr(2, 0, '# points in point cloud: {:d}'.format(numPoints))
         subWindow.refresh()
+
 
 # When program quits make sure the console is returned back to normal mode
 finally:
