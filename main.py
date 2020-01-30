@@ -2,6 +2,7 @@
 # Data structure and reading of data loosely based on the matlab code from IWR6843 overhead people counting lab from Texas-Instruments
 
 from typing import Tuple, TextIO, BinaryIO
+import platform
 import serial
 import struct
 import binascii
@@ -39,6 +40,9 @@ configFilePath: str = "mmw_pplcount_demo_default.cfg"
 dataPort = 'COM12'
 controlPort = 'COM11'
 headless = False
+# If program is running on Linux assume we're on a headless device (ie a pi)
+if platform.system() == 'Linux':
+    headless = True
 
 try:
     if args.jsonFile:
