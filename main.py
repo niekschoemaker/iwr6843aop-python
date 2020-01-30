@@ -28,6 +28,7 @@ parser.add_argument("-t", "--targets", help="output targets data as json to file
 parser.add_argument("-p", "--controlport", help="Change the control com port to use (default: COM11)", metavar="COMPORT", dest="controlPort")
 parser.add_argument("-d", "--dataport", help="Change the data com port to use (default: COM12)", metavar="COMPORT", dest="dataPort")
 parser.add_argument("-c", "--chirpconfig", help="Specify chirpconfig file (default: mmw_pplcount_demo_default.cfg)", metavar="PATH", dest="configFile")
+parser.add_argument("--headless", help="Enable headless mode, disables all console functionality", action="store_true")
 args = parser.parse_args()
 jsonFile: TextIO = None
 binFile: BinaryIO = None
@@ -37,6 +38,7 @@ configFilePath: str = "mmw_pplcount_demo_default.cfg"
 # Serial ports, can be overriden by specifying --dataport PORT and --controlport PORT
 dataPort = 'COM12'
 controlPort = 'COM11'
+headless = False
 
 try:
     if args.jsonFile:
@@ -60,6 +62,9 @@ try:
     if args.configFile:
         configFilePath = args.configFile
         print("Config file set to {:s}".format(configFilePath))
+    if args.headless:
+        headless = True
+        print("Headless mode enabled")
 except:
     e = sys.exc_info()[0]
     print( "Error while parsing arguments: %s" % e )
@@ -289,11 +294,12 @@ def WaitForSyncPattern():
 
     # Wait for the serial port to receive the sync pattern
     while True:
-        # Listen for ctrl+c in case it gets stuck
-        inputCh = stdscr.getch()
-        # inputCh 3: Ctrl+c
-        if inputCh == 3:
-            sys.exit(0)
+        if not headless:
+            # Listen for ctrl+c in case it gets stuck
+            inputCh = stdscr.getch()
+            # inputCh 3: Ctrl+c
+            if inputCh == 3:
+                sys.exit(0)
 
         # Read 1 byte of data
         currentData = serialData.read(1)
@@ -316,27 +322,29 @@ except Exception as e:
     print("Error: unable to start thread")
 
 try:
-    # Initialize the fancy console screen
-    stdscr = curses.initscr()
-    # Set the console as nodelay, makes getch non-blocking
-    stdscr.nodelay(1)
-    curses.noecho()
-    curses.nocbreak()
-    y, x = stdscr.getmaxyx()
-    subWindow = stdscr.subpad(5, x, 0,0)
-    mainWindow = stdscr.subpad(y-6,x,6,0)
-    # Enable scrolling for the main console window
-    mainWindow.scrollok(True)
-    mainWindow.idlok(True)
+    if not headless:
+        # Initialize the fancy console screen
+        stdscr = curses.initscr()
+        # Set the console as nodelay, makes getch non-blocking
+        stdscr.nodelay(1)
+        curses.noecho()
+        curses.nocbreak()
+        y, x = stdscr.getmaxyx()
+        subWindow = stdscr.subpad(5, x, 0,0)
+        mainWindow = stdscr.subpad(y-6,x,6,0)
+        # Enable scrolling for the main console window
+        mainWindow.scrollok(True)
+        mainWindow.idlok(True)
 
     while True:
         numTargets = 0
         numPoints = 0
-        # Get input from console, is equal to -1 when no input available
-        inputCh = stdscr.getch()
-        # If input equals 3 (ctrl+c) exit the program
-        if inputCh == 3:
-            sys.exit(0)
+        if not headless:
+            # Get input from console, is equal to -1 when no input available
+            inputCh = stdscr.getch()
+            # If input equals 3 (ctrl+c) exit the program
+            if inputCh == 3:
+                sys.exit(0)
 
         WaitForSyncPattern()
 
@@ -383,8 +391,9 @@ try:
 
             if tlvData['type'] == 7: # type 7: Target List
                 numTargets = m.floor(valueLength/targetLengthInBytes)
-                # Print number of targets to console
-                stdscr.addstr(0,0,'numTargets: ' + str(numTargets))
+                if not headless:
+                    # Print number of targets to console
+                    stdscr.addstr(0,0,'numTargets: ' + str(numTargets))
                 targets = list()
                 # Iterate over all targets
                 for i in range(0, numTargets):
@@ -413,34 +422,36 @@ try:
             if targetsFile:
                 json.dump(currentTargetData, targetsFile)
         
-        # Add the parsed data to the console window in a nice formot
-        mainWindow.clear()
-        mainWindow.addstr(0, 0, 'TargetID\tposition\t\tvelocity\t\tacceleration\t\tdTime\tdistance', curses.A_BOLD)
-        currentTime: float = time.time()
-        row = 0
-        for target in targetData.values():
-            if time.time() - target['lastTime'] > 5.0:
-                continue
+        if not headless:
+            # Add the parsed data to the console window in a nice formot
+            mainWindow.clear()
+            mainWindow.addstr(0, 0, 'TargetID\tposition\t\tvelocity\t\tacceleration\t\tdTime\tdistance', curses.A_BOLD)
+            currentTime: float = time.time()
+            row = 0
+        
+            for target in targetData.values():
+                if time.time() - target['lastTime'] > 5.0:
+                    continue
 
-            t = target['target']
-            startPos = target['startingPos']
-            row = row + 1
-            mainWindow.addstr(row, 0, "{:d}\t\t{{{: .2f}, {: .2f}, {: .2f}}}\t{{{: .2f}, {: .2f}, {: .2f}}}\t{{{: .2f}, {: .2f}, {: .2f}}}\t{: .2f}\t{: .2f}\t{{{: .2f}, {: .2f}}}\t{}".format(
-                t['tid'],
-                t['posX'], t['posY'], t['posZ'],
-                t['velX'], t['velY'], t['velZ'],
-                t['accX'], t['accY'], t['accZ'],
-                currentTime - target['lastTime'], target['distance'],
-                startPos['x'], startPos['y'], str(target['inRoom']) + ' '
-                ))
+                t = target['target']
+                startPos = target['startingPos']
+                row = row + 1
+                mainWindow.addstr(row, 0, "{:d}\t\t{{{: .2f}, {: .2f}, {: .2f}}}\t{{{: .2f}, {: .2f}, {: .2f}}}\t{{{: .2f}, {: .2f}, {: .2f}}}\t{: .2f}\t{: .2f}\t{{{: .2f}, {: .2f}}}\t{}".format(
+                    t['tid'],
+                    t['posX'], t['posY'], t['posZ'],
+                    t['velX'], t['velY'], t['velZ'],
+                    t['accX'], t['accY'], t['accZ'],
+                    currentTime - target['lastTime'], target['distance'],
+                    startPos['x'], startPos['y'], str(target['inRoom']) + ' '
+                    ))
 
-        mainWindow.refresh()
-
-
-        if verbose:
-            # Print all the collected data to the console, this spams a lot so locked behind -v argument
-            mainWindow.addstr(str(dataDict) + '\n')
             mainWindow.refresh()
+
+
+            if verbose:
+                # Print all the collected data to the console, this spams a lot so locked behind -v argument
+                mainWindow.addstr(str(dataDict) + '\n')
+                mainWindow.refresh()
 
         dataCount += 1
 
@@ -473,18 +484,20 @@ try:
         #      mainWindow.addstr(mainWindow.getmaxyx()[0]-1, 0, '')
         #      mainWindow.refresh()
         # Clear the window, this is the easiest way to make sure no old data gets left on the screen
-        subWindow.clear()
-        subWindow.addstr(0, 0, 'Captured frames: {:d}; Captured frames: {:d}'.format(dataCount, dataDict['frameNumber']))
-        subWindow.addstr(1, 0, 'People Count: {:d}'.format(peopleCount))
-        subWindow.addstr(2, 0, '# points in point cloud: {:d}'.format(numPoints))
-        subWindow.refresh()
+        if not headless:
+            subWindow.clear()
+            subWindow.addstr(0, 0, 'Captured frames: {:d}; Captured frames: {:d}'.format(dataCount, dataDict['frameNumber']))
+            subWindow.addstr(1, 0, 'People Count: {:d}'.format(peopleCount))
+            subWindow.addstr(2, 0, '# points in point cloud: {:d}'.format(numPoints))
+            subWindow.refresh()
 
 
 # When program quits make sure the console is returned back to normal mode
 finally:
-    curses.echo()
-    curses.nocbreak()
-    curses.endwin()
+    if not headless:
+        curses.echo()
+        curses.nocbreak()
+        curses.endwin()
 
 # Close the serial connections
 serialControl.close()
